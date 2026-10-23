@@ -323,3 +323,27 @@ cfht_access_token: str = ""
 ### Helpful Links
 
 [Kealahou Phase 1 & 2 tool - staging](https://hou-stage.cfht.hawaii.edu/)
+
+## Skynet Robotic Telescope Network
+
+### Dependency group
+
+Skynet requires no additional dependency groups to be installed.
+
+### Configuration Values
+
+See [configuration](#configuration) for instructions on setting these values.
+
+```python
+skynet_token: str = ""
+skynet_api_root: str = "https://api.skynetgo.org/"
+skynet_web_root: str = "https://skynetgo.org/"
+```
+
+The token must be an unscoped Skynet personal API token. Skynet presents its
+telescopes as a single optical imaging facility: requests spend one of the
+user's observing grants, and Skynet chooses the telescope.
+
+### Helpful links
+
+* [Skynet](https://skynetgo.org/)
