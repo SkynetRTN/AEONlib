@@ -48,5 +48,10 @@ class Settings(BaseSettings):
     cfht_api_root: str = "https://api-stage.cfht.hawaii.edu/"
     cfht_access_token: str = ""
 
+    # Skynet Robotic Telescope Network
+    skynet_token: str = ""
+    skynet_api_root: str = "https://api.skynetgo.org/"
+    skynet_web_root: str = "https://skynetgo.org/"
+
 
 settings = Settings()
