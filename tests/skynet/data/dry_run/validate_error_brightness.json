@@ -1,0 +1,107 @@
+{
+  "detail": [
+    {
+      "type": "float_parsing",
+      "loc": [
+        "target",
+        "position",
+        "fixed",
+        "coordinates",
+        "equatorial",
+        "decDeg"
+      ],
+      "msg": "Input should be a valid number, unable to parse string as a number"
+    },
+    {
+      "type": "missing",
+      "loc": [
+        "opticalImagingConfiguration",
+        "brightnessModel",
+        "tagged-union[SourceBrightnessModel,SkyBrightnessModel,CatalogEphemerisBrightnessModel]",
+        "source",
+        "id"
+      ],
+      "msg": "Field required"
+    },
+    {
+      "type": "float_parsing",
+      "loc": [
+        "opticalImagingConfiguration",
+        "brightnessModel",
+        "tagged-union[SourceBrightnessModel,SkyBrightnessModel,CatalogEphemerisBrightnessModel]",
+        "source",
+        "magnitudeMag"
+      ],
+      "msg": "Input should be a valid number, unable to parse string as a number"
+    },
+    {
+      "type": "string_type",
+      "loc": [
+        "opticalImagingConfiguration",
+        "brightnessModel",
+        "tagged-union[SourceBrightnessModel,SkyBrightnessModel,CatalogEphemerisBrightnessModel]",
+        "source",
+        "filterId"
+      ],
+      "msg": "Input should be a valid string"
+    },
+    {
+      "type": "missing",
+      "loc": [
+        "opticalImagingConfiguration",
+        "brightnessModel",
+        "tagged-union[SourceBrightnessModel,SkyBrightnessModel,CatalogEphemerisBrightnessModel]",
+        "source",
+        "temporalComponent",
+        "exponential",
+        "id"
+      ],
+      "msg": "Field required"
+    },
+    {
+      "type": "float_parsing",
+      "loc": [
+        "opticalImagingConfiguration",
+        "brightnessModel",
+        "tagged-union[function-after[_inline_component_wins(), SourceBrightnessModelCreate],SkyBrightnessModelCreate]",
+        "source",
+        "magnitudeMag"
+      ],
+      "msg": "Input should be a valid number, unable to parse string as a number"
+    },
+    {
+      "type": "string_type",
+      "loc": [
+        "opticalImagingConfiguration",
+        "brightnessModel",
+        "tagged-union[function-after[_inline_component_wins(), SourceBrightnessModelCreate],SkyBrightnessModelCreate]",
+        "source",
+        "filterId"
+      ],
+      "msg": "Input should be a valid string"
+    },
+    {
+      "type": "greater_than",
+      "loc": [
+        "opticalImagingConfiguration",
+        "brightnessModel",
+        "tagged-union[function-after[_inline_component_wins(), SourceBrightnessModelCreate],SkyBrightnessModelCreate]",
+        "source",
+        "temporalComponent",
+        "exponential",
+        "referenceTimeSec"
+      ],
+      "msg": "Input should be greater than 0"
+    },
+    {
+      "type": "float_parsing",
+      "loc": [
+        "requests",
+        0,
+        "optical_imaging",
+        "targetSnr"
+      ],
+      "msg": "Input should be a valid number, unable to parse string as a number"
+    }
+  ]
+}

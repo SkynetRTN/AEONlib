@@ -1,5 +1,6 @@
 import copy
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -13,6 +14,16 @@ from .test_facility import POOLS, Recorder, facility
 from .test_request import snr_request
 
 VALIDATE = ("POST", "/v1/observation-specs:validate")
+NOW = datetime(2026, 10, 25, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def now(monkeypatch):
+    """The fixture windows open on 2026-11-01; preview them from before that"""
+    monkeypatch.setattr("aeonlib.skynet.facility._now", lambda: NOW)
+    return NOW
+
+
 COMPATIBLE = ("POST", "/v1/observation-specs:compatible-instruments")
 OBSERVABILITY = ("POST", "/v1/observation-specs:observability")
 PLAN = ("POST", "/v1/observation-specs:plan")
@@ -105,6 +116,29 @@ class TestValidate:
         )
         result = facility(recorder).validate(snr_request())
         assert result.errors == {"non_field_errors": ["Unknown schema kind"]}
+
+    def test_a_brightness_model_422_names_its_fields(self):
+        # Skynet's own errors for a bad inline brightness model: each field
+        # twice, once per union branch, and the stored-model branch's spurious
+        # missing ids
+        recorder = Recorder(
+            {
+                POOLS: load("instrument_pools.json"),
+                VALIDATE: httpx.Response(
+                    422, json=load("dry_run/validate_error_brightness.json")
+                ),
+            }
+        )
+        errors = facility(recorder).validate(snr_request()).errors
+        assert set(errors) == {
+            "target",
+            "source.magnitude",
+            "source.filter_id",
+            "source",
+            "exposures.0.target_snr",
+        }
+        assert errors["source"] == ["Input should be greater than 0"]
+        assert not any("Field required" in m for ms in errors.values() for m in ms)
 
     def test_a_grant_the_user_cannot_spend(self):
         recorder = Recorder({POOLS: load("instrument_pools.json")})
@@ -214,6 +248,30 @@ class TestInstrumentPreview:
             "2026-11-08T00:00:00Z",
         )
         assert body["spec"] == load("publish_snr.json")["spec"]
+
+    def test_a_window_already_open_is_checked_from_now(self, monkeypatch):
+        later = datetime(2026, 11, 3, 12, tzinfo=UTC)
+        monkeypatch.setattr("aeonlib.skynet.facility._now", lambda: later)
+        recorder = Recorder(preview_routes())
+        (preview,) = facility(recorder).instrument_preview(
+            snr_request(), instrument_ids=[105]
+        )
+        (sent,) = recorder.sent(*OBSERVABILITY)
+        body = json.loads(sent.content)
+        assert body["start"] == "2026-11-03T12:00:00Z"
+        assert body["spanDays"] == pytest.approx(4.5)
+        assert preview.checked_until is not None
+        assert preview.checked_until.isoformat() == "2026-11-08T00:00:00+00:00"
+
+    def test_a_closed_window_is_not_observable(self, monkeypatch):
+        later = datetime(2026, 11, 9, tzinfo=UTC)
+        monkeypatch.setattr("aeonlib.skynet.facility._now", lambda: later)
+        recorder = Recorder(preview_routes())
+        (preview,) = facility(recorder).instrument_preview(
+            snr_request(), instrument_ids=[105]
+        )
+        assert preview.compatible and preview.observable is False
+        assert recorder.sent(*OBSERVABILITY) == [] and recorder.sent(*PLAN) == []
 
     def test_an_invalid_spec_raises(self):
         recorder = Recorder(preview_routes())

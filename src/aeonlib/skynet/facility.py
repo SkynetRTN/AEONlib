@@ -204,7 +204,9 @@ class SkynetFacility:
             )
         )
         assert request.window.start is not None  # checked in SkynetImagingRequest
-        start = request.window.start.utc.to_datetime(timezone=UTC)
+        # What's left of the window: a start in the past would count windows
+        # that have gone
+        start = max(request.window.start.utc.to_datetime(timezone=UTC), _now())
         end = request.window.end.utc.to_datetime(timezone=UTC)
         checked_until = min(end, start + PREVIEW_SPAN)
         previews = []
@@ -219,7 +221,11 @@ class SkynetFacility:
                 compatible=result.compatible,
                 reasons=result.reasons,
             )
-            if result.compatible:
+            if result.compatible and start >= end:
+                # The window has closed: nothing to observe in it
+                preview.observable = False
+                preview.checked_until = end
+            elif result.compatible:
                 observability = _ObservabilityResponse.model_validate(
                     self._request(
                         "POST",
@@ -227,7 +233,7 @@ class SkynetFacility:
                         json={
                             "spec": spec,
                             "instrumentId": result.instrument_id,
-                            "start": _iso(request.window.start),
+                            "start": start.isoformat().replace("+00:00", "Z"),
                             "spanDays": (checked_until - start).total_seconds() / 86400,
                             "resolutionSec": PREVIEW_RESOLUTION_SEC,
                         },
@@ -347,11 +353,16 @@ class SkynetFacility:
         return f"{self.web_root}/observations/{observation_id}"
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
 def _detail(response: httpx.Response) -> Any:
     try:
-        return response.json().get("detail", response.text)
+        body = response.json()
     except ValueError:
         return response.text
+    return body.get("detail", response.text) if isinstance(body, dict) else body
 
 
 def _data_product(product: ProgressProduct, url: str | None) -> DataProduct:
@@ -388,6 +399,22 @@ def _field_errors(detail: Any) -> dict[str, list[str]]:
         if not isinstance(item, dict):
             errors.setdefault(NON_FIELD_ERRORS, []).append(str(item))
             continue
+        if _read_model_branch(item.get("loc", [])):
+            continue
         field = request_field(item.get("loc", [])) or NON_FIELD_ERRORS
         errors.setdefault(field, []).append(str(item.get("msg", item)))
     return errors
+
+
+def _read_model_branch(loc: Any) -> bool:
+    """
+    Whether an error comes from a union branch for stored models (it names no
+    *Create model): Skynet accepts either a stored or a new brightness model, so
+    a new one also fails the stored branch, on fields such as id it never had
+    """
+    return any(
+        isinstance(part, str)
+        and part.startswith("tagged-union[")
+        and "Create" not in part
+        for part in loc
+    )

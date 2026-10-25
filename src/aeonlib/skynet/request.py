@@ -261,6 +261,7 @@ WIRE_FIELDS: dict[str, str] = {
     "target": "target",
     "epochCount": "epoch_count",
     "cadencePeriodSec": "cadence_period",
+    "requests.*": "exposures.*",
     "requests.*.filterSpecifierIds": "exposures.*.filter_id",
     "requests.*.targetSnr": "exposures.*.target_snr",
     "requests.*.exposureTimeSec": "exposures.*.total_exposure_time",
@@ -279,10 +280,25 @@ WIRE_FIELDS: dict[str, str] = {
     "opticalImagingConfiguration.brightnessModel.temporalComponent.referenceTimeSec": "source",
     "opticalImagingConfiguration.brightnessModel.spectralComponent.index": "source.spectral_index",
 }
-# Pydantic puts a discriminated union's tag in the location
+# Pydantic puts a discriminated union's tag in the location, and for a plain
+# union of them a "tagged-union[...]" part naming the branch
 _UNION_TAGS = frozenset(
-    {"optical_imaging", "power_law", "exponential", "blackbody", "fixed", "equatorial"}
+    {
+        "optical_imaging",
+        "power_law",
+        "exponential",
+        "blackbody",
+        "fixed",
+        "equatorial",
+        "source",
+    }
 )
+
+
+def _is_union_part(part: str | int) -> bool:
+    return isinstance(part, str) and (part in _UNION_TAGS or "[" in part)
+
+
 _ENVELOPE = ("spec", "data")
 
 
@@ -292,7 +308,7 @@ def request_field(loc: list[str | int] | tuple[str | int, ...]) -> str | None:
     "exposures.0.target_snr" for ["requests", 0, "optical_imaging", "targetSnr"],
     or None if it isn't one the request sets.
     """
-    parts = [p for p in loc if p not in _UNION_TAGS]
+    parts = [p for p in loc if not _is_union_part(p)]
     if parts and parts[0] == "body":
         parts = parts[1:]
     for key in _ENVELOPE:

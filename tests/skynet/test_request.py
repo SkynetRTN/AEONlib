@@ -274,6 +274,13 @@ def leaves(value: Any, path: tuple[str | int, ...] = ()):
         yield path
 
 
+# The union-branch part of a real brightness-model error location
+CREATE_BRANCH = (
+    "tagged-union[function-after[_inline_component_wins(), "
+    "SourceBrightnessModelCreate],SkyBrightnessModelCreate]"
+)
+
+
 class TestRequestField:
     @pytest.mark.parametrize(
         "name", ["publish_snr.json", "publish_exposure.json", "publish_cadence.json"]
@@ -323,6 +330,17 @@ class TestRequestField:
                 "source.decay_index",
             ),
             (["cancelOn"], "window.end"),
+            (["requests", 1, "optical_imaging"], "exposures.1"),
+            (
+                [
+                    "opticalImagingConfiguration",
+                    "brightnessModel",
+                    CREATE_BRANCH,
+                    "source",
+                    "magnitudeMag",
+                ],
+                "source.magnitude",
+            ),
             (["opticalImagingConfiguration", "trackingMode"], None),
             (["somethingElse"], None),
         ],

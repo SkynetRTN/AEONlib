@@ -303,6 +303,11 @@ class TestErrors:
         with pytest.raises(SkynetError, match="Bad Gateway"):
             facility(recorder).instrument_pools()
 
+    def test_a_list_body_is_the_detail(self):
+        recorder = Recorder({POOLS: httpx.Response(500, json=[{"msg": "boom"}])})
+        with pytest.raises(SkynetError, match="boom"):
+            facility(recorder).instrument_pools()
+
     def test_network_failures(self):
         def unreachable(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
