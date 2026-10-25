@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from math import log
 from typing import Any
 
 import astropy.units as u
@@ -7,7 +8,12 @@ from astropy.coordinates import Angle
 from pydantic import ValidationError
 
 from aeonlib.models import SiderealTarget, Window
-from aeonlib.skynet.request import FilterExposure, SkynetImagingRequest, SourceModel
+from aeonlib.skynet.request import (
+    FilterExposure,
+    SkynetImagingRequest,
+    SourceModel,
+    request_field,
+)
 
 from ._data import load
 
@@ -73,6 +79,47 @@ class TestPublishBody:
             exposures=[FilterExposure(filter_id="V", total_exposure_time=600)],
         )
         assert request.to_publish_body(owner_id=133) == load("publish_exposure.json")
+
+    def test_cadence_request_matches_the_contract(self):
+        request = SkynetImagingRequest(
+            name="AT 2026abc nightly",
+            grant_id=100,
+            target=target(),
+            window=window(),
+            exposures=[FilterExposure(filter_id="r'", target_snr=5, count=2)],
+            source=afterglow(),
+            min_moon_separation=30,
+            epoch_count=4,
+            cadence_period=86400,
+        )
+        assert request.to_publish_body(owner_id=134) == load("publish_cadence.json")
+
+    def test_one_epoch_sends_no_cadence(self):
+        data = snr_request().to_publish_body(owner_id=1)["spec"]["data"]
+        assert not {"epochCount", "cadenceKind", "cadencePeriodSec"} & set(data)
+
+    def test_exponential_decay_moves_the_magnitude_to_the_event(self):
+        # Four hours after T0 with rate 1 and a two-hour timescale the source
+        # has faded by e^2, so at T0 it was 2.5 * 2 / ln 10 mag brighter
+        source = SourceModel(
+            magnitude=17.8,
+            filter_id="r'",
+            measured_at=MEASURED_AT,
+            event_time=EVENT_TIME,
+            decay_index=1.0,
+            decay="exponential",
+            decay_timescale=7200.0,
+            spectral_index=0.7,
+        )
+        body = snr_request(source=source).to_publish_body(owner_id=1)
+        model = body["spec"]["data"]["opticalImagingConfiguration"]["brightnessModel"]
+        assert model["magnitudeMag"] == pytest.approx(17.8 - 5 / log(10))
+        assert model["temporalComponent"] == {
+            "temporalComponentType": "exponential",
+            "index": 1.0,
+            "eventTime": "2026-10-31T02:00:00Z",
+            "referenceTimeSec": 7200.0,
+        }
 
     def test_reference_time_is_measured_from_the_event(self):
         source = afterglow(measured_at=utc(2026, 10, 31, 3))
@@ -181,3 +228,104 @@ class TestRequestValidation:
             source=None,
         )
         assert request.source is None
+
+    @pytest.mark.parametrize("fields", [{"epoch_count": 3}, {"cadence_period": 3600.0}])
+    def test_cadence_needs_both_epochs_and_a_period(self, fields: dict[str, Any]):
+        with pytest.raises(ValidationError, match="cadence_period"):
+            snr_request(**fields)
+
+    @pytest.mark.parametrize(
+        "fields", [{"decay": "exponential"}, {"decay_timescale": 3600.0}]
+    )
+    def test_exponential_decay_needs_a_timescale(self, fields: dict[str, Any]):
+        with pytest.raises(ValidationError, match="decay_timescale"):
+            SourceModel.model_validate(afterglow().model_dump() | fields)
+
+
+# Body fields to_publish_body fills with fixed values
+FIXED = {
+    "spec.schemaKind",
+    "spec.schemaVersion",
+    "spec.data.copiesMode",
+    "spec.data.instrumentMode",
+    "spec.data.cadenceKind",
+    "spec.data.cadenceLevel",
+    "spec.data.requests.*.requestType",
+    "spec.data.requests.*.order",
+    "spec.data.opticalImagingConfiguration.trackingMode",
+    "spec.data.opticalImagingConfiguration.ditherStrategy",
+    "spec.data.opticalImagingConfiguration.temporalOffsetSec",
+    "spec.data.opticalImagingConfiguration.maxTiles",
+    "spec.data.opticalImagingConfiguration.tileOverlap",
+    "spec.data.opticalImagingConfiguration.brightnessModel.modelType",
+    "spec.data.opticalImagingConfiguration.brightnessModel.temporalComponent.temporalComponentType",
+    "spec.data.opticalImagingConfiguration.brightnessModel.spectralComponent.spectralComponentType",
+}
+
+
+def leaves(value: Any, path: tuple[str | int, ...] = ()):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from leaves(item, (*path, key))
+    elif isinstance(value, list) and value and isinstance(value[0], dict):
+        for index, item in enumerate(value):
+            yield from leaves(item, (*path, index))
+    else:
+        yield path
+
+
+class TestRequestField:
+    @pytest.mark.parametrize(
+        "name", ["publish_snr.json", "publish_exposure.json", "publish_cadence.json"]
+    )
+    def test_every_field_the_body_writes_maps_back(self, name: str):
+        for path in leaves(load(name)):
+            pattern = ".".join("*" if isinstance(p, int) else p for p in path)
+            if pattern in FIXED:
+                continue
+            assert request_field(path) is not None, pattern
+
+    def test_the_recorded_422_names_the_exposure(self):
+        (error,) = load("dry_run/validate_error.json")["detail"]
+        assert request_field(error["loc"]) == "exposures.0.target_snr"
+
+    @pytest.mark.parametrize(
+        ("loc", "field"),
+        [
+            (
+                [
+                    "body",
+                    "spec",
+                    "data",
+                    "requests",
+                    1,
+                    "optical_imaging",
+                    "sampleCount",
+                ],
+                "exposures.1.count",
+            ),
+            (
+                ["requests", 2, "optical_imaging", "filterSpecifierIds", 0],
+                "exposures.2.filter_id",
+            ),
+            (
+                ["target", "position", "fixed", "coordinates", "equatorial", "decDeg"],
+                "target",
+            ),
+            (
+                [
+                    "opticalImagingConfiguration",
+                    "brightnessModel",
+                    "temporalComponent",
+                    "power_law",
+                    "index",
+                ],
+                "source.decay_index",
+            ),
+            (["cancelOn"], "window.end"),
+            (["opticalImagingConfiguration", "trackingMode"], None),
+            (["somethingElse"], None),
+        ],
+    )
+    def test_locations(self, loc: list[str | int], field: str | None):
+        assert request_field(loc) == field

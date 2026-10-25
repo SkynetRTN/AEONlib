@@ -1,6 +1,6 @@
 from datetime import UTC
-from math import asin, degrees
-from typing import Annotated, Any, ClassVar
+from math import asin, degrees, log
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,
@@ -41,8 +41,9 @@ class FilterExposure(BaseModel):
 
 class SourceModel(BaseModel):
     """
-    Source brightness used to size exposures for a target SNR. The flux follows
-    F_nu ∝ (t - T0)^-decay_index * nu^-spectral_index.
+    Source brightness used to size exposures for a target SNR. With the default
+    power-law decay the flux follows F_nu ∝ (t - T0)^-decay_index * nu^-spectral_index.
+    With exponential decay it follows exp(-decay_index * (t - T0) / decay_timescale).
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(validate_assignment=True)
@@ -55,7 +56,10 @@ class SourceModel(BaseModel):
     event_time: Time
     """T0 of the power-law decay"""
     decay_index: float
-    """Temporal power-law index (alpha)"""
+    """Temporal decay index: alpha for a power law, the rate for exponential decay"""
+    decay: Literal["power_law", "exponential"] = "power_law"
+    decay_timescale: PositiveFloat | None = None
+    """Exponential decay timescale in seconds. Required for exponential decay only."""
     spectral_index: float
     """Spectral power-law index (beta)"""
     point_source: bool = True
@@ -68,6 +72,10 @@ class SourceModel(BaseModel):
     def _measured_after_the_event(self) -> "SourceModel":
         if self.measured_at <= self.event_time:
             raise ValueError("measured_at must be after event_time")
+        if (self.decay == "exponential") != (self.decay_timescale is not None):
+            raise ValueError(
+                "decay_timescale is required for, and only for, exponential decay"
+            )
         return self
 
 
@@ -87,6 +95,10 @@ class SkynetImagingRequest(BaseModel):
     max_airmass: Annotated[float, Field(gt=1.0)] | None = None
     min_moon_separation: Angle | None = None
     """Minimum Moon separation"""
+    epoch_count: PositiveInt = 1
+    """Number of epochs. More than one repeats every exposure each cadence_period."""
+    cadence_period: PositiveFloat | None = None
+    """Seconds from the start of one epoch to the start of the next"""
 
     @field_validator("min_moon_separation")
     @classmethod
@@ -108,6 +120,10 @@ class SkynetImagingRequest(BaseModel):
                 raise ValueError("A target SNR needs a source brightness model")
             if self.source.event_time >= self.window.start:
                 raise ValueError("source.event_time must be before window.start")
+        if (self.epoch_count > 1) != (self.cadence_period is not None):
+            raise ValueError(
+                "cadence_period is required for, and only for, more than one epoch"
+            )
         return self
 
     def to_publish_body(self, owner_id: int) -> dict[str, Any]:
@@ -164,6 +180,11 @@ class SkynetImagingRequest(BaseModel):
             "opticalImagingConfiguration": configuration,
             "requests": requests,
         }
+        if self.cadence_period is not None:
+            data["epochCount"] = self.epoch_count
+            data["cadenceKind"] = "period"
+            data["cadencePeriodSec"] = self.cadence_period
+            data["cadenceLevel"] = "epoch"
         return {
             "ownerId": owner_id,
             "observingGrantIds": [self.grant_id],
@@ -185,19 +206,34 @@ def _iso(time: Any) -> str:
 
 
 def _brightness_model(source: SourceModel) -> dict[str, Any]:
-    reference_time_sec = (source.measured_at - source.event_time).to_value("s")
+    since_event_sec = float((source.measured_at - source.event_time).to_value("s"))
+    magnitude = source.magnitude
+    if source.decay == "exponential":
+        assert source.decay_timescale is not None  # checked in SourceModel
+        # Skynet's exponential term is 1 at T0, so its magnitude is the one at T0
+        magnitude -= (
+            2.5
+            * source.decay_index
+            * since_event_sec
+            / (source.decay_timescale * log(10))
+        )
+        reference_time_sec = source.decay_timescale
+    else:
+        # The power-law term is 1 at t - T0 = referenceTimeSec, so the magnitude
+        # holds at the measurement time
+        reference_time_sec = since_event_sec
     return {
         "modelType": "source",
         "isPointSource": source.point_source,
-        "magnitudeMag": source.magnitude,
+        "magnitudeMag": round(magnitude, 6),
         "filterId": source.filter_id,
         "avMag": source.extinction_av,
         "rv": source.rv,
         "temporalComponent": {
-            "temporalComponentType": "power_law",
+            "temporalComponentType": source.decay,
             "index": source.decay_index,
             "eventTime": _iso(source.event_time),
-            "referenceTimeSec": round(float(reference_time_sec), 6),
+            "referenceTimeSec": round(reference_time_sec, 6),
         },
         "spectralComponent": {
             "spectralComponentType": "power_law",
@@ -211,3 +247,66 @@ class SubmittedObservation(_SkynetResponse):
 
     id: int
     uid: str
+
+
+# Where each field of the publish body comes from, for mapping Skynet's 422
+# error locations back to request fields. Paths are dotted, with "*" for a
+# list index; the fixed defaults to_publish_body adds map to no field.
+WIRE_FIELDS: dict[str, str] = {
+    "name": "name",
+    "observingGrantIds": "grant_id",
+    "ownerId": "grant_id",
+    "startAfter": "window.start",
+    "cancelOn": "window.end",
+    "target": "target",
+    "epochCount": "epoch_count",
+    "cadencePeriodSec": "cadence_period",
+    "requests.*.filterSpecifierIds": "exposures.*.filter_id",
+    "requests.*.targetSnr": "exposures.*.target_snr",
+    "requests.*.exposureTimeSec": "exposures.*.total_exposure_time",
+    "requests.*.sampleCount": "exposures.*.count",
+    "opticalImagingConfiguration.minElevationDeg": "max_airmass",
+    "opticalImagingConfiguration.minMoonSeparationDeg": "min_moon_separation",
+    "opticalImagingConfiguration.brightnessModel": "source",
+    "opticalImagingConfiguration.brightnessModel.magnitudeMag": "source.magnitude",
+    "opticalImagingConfiguration.brightnessModel.filterId": "source.filter_id",
+    "opticalImagingConfiguration.brightnessModel.isPointSource": "source.point_source",
+    "opticalImagingConfiguration.brightnessModel.avMag": "source.extinction_av",
+    "opticalImagingConfiguration.brightnessModel.rv": "source.rv",
+    "opticalImagingConfiguration.brightnessModel.temporalComponent": "source",
+    "opticalImagingConfiguration.brightnessModel.temporalComponent.index": "source.decay_index",
+    "opticalImagingConfiguration.brightnessModel.temporalComponent.eventTime": "source.event_time",
+    "opticalImagingConfiguration.brightnessModel.temporalComponent.referenceTimeSec": "source",
+    "opticalImagingConfiguration.brightnessModel.spectralComponent.index": "source.spectral_index",
+}
+# Pydantic puts a discriminated union's tag in the location
+_UNION_TAGS = frozenset(
+    {"optical_imaging", "power_law", "exponential", "blackbody", "fixed", "equatorial"}
+)
+_ENVELOPE = ("spec", "data")
+
+
+def request_field(loc: list[str | int] | tuple[str | int, ...]) -> str | None:
+    """
+    Return the request field a Skynet error location points at, such as
+    "exposures.0.target_snr" for ["requests", 0, "optical_imaging", "targetSnr"],
+    or None if it isn't one the request sets.
+    """
+    parts = [p for p in loc if p not in _UNION_TAGS]
+    if parts and parts[0] == "body":
+        parts = parts[1:]
+    for key in _ENVELOPE:
+        if parts and parts[0] == key:
+            parts = parts[1:]
+    indexes = [p for p in parts if isinstance(p, int)]
+    pattern = ".".join("*" if isinstance(p, int) else p for p in parts)
+    while pattern:
+        field = WIRE_FIELDS.get(pattern)
+        if field is not None:
+            for index in indexes:
+                field = field.replace("*", str(index), 1)
+            return field
+        pattern, _, last = pattern.rpartition(".")
+        if last == "*" and indexes:
+            indexes.pop()
+    return None
