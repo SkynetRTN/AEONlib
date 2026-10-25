@@ -119,7 +119,7 @@ class TestSubmit:
         request = snr_request(
             exposures=[FilterExposure(filter_id="z'", target_snr=10, count=1)]
         )
-        with pytest.raises(ValueError, match=r"filter\(s\) \[\"z'\"\]"):
+        with pytest.raises(ValueError, match="no instrument with filter z'"):
             facility(recorder).submit(request)
         assert recorder.sent(*PUBLISH) == []
 

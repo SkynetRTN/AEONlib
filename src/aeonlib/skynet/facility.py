@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -9,9 +9,17 @@ from aeonlib.conf import Settings
 from aeonlib.conf import settings as default_settings
 from aeonlib.exceptions import AuthenticationError, ServiceNetworkError
 
-from .pools import InstrumentPools
+from .pools import InstrumentPool, InstrumentPools
+from .preview import (
+    InstrumentPreview,
+    PlanTotals,
+    SpecValidation,
+    _CompatibilityResponse,
+    _ObservabilityResponse,
+    _PlanResponse,
+)
 from .progress import ObservationProgress, ProgressProduct
-from .request import SkynetImagingRequest, SubmittedObservation
+from .request import SkynetImagingRequest, SubmittedObservation, _iso, request_field
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +40,12 @@ TERMINAL_STATES = frozenset(
 # Skynet's maximum presigned URL lifetime in seconds (its default is 60)
 PRESIGN_EXPIRES_IN = 900
 PRESIGN_BATCH = 200
+
+# The observability check covers at most this much of a request's window, on
+# this grid (Skynet computes it per grid step and sets no limit itself)
+PREVIEW_SPAN = timedelta(days=7)
+PREVIEW_RESOLUTION_SEC = 300.0
+NON_FIELD_ERRORS = "non_field_errors"
 
 
 class SkynetError(RuntimeError):
@@ -133,23 +147,142 @@ class SkynetFacility:
 
     def submit(self, request: SkynetImagingRequest) -> SubmittedObservation:
         """Submit the request after checking its grant and filters against the user's pools"""
-        pools = self.instrument_pools()
+        errors = self._pool_errors(request)
+        if errors:
+            raise ValueError(
+                "; ".join(m for messages in errors.values() for m in messages)
+            )
+        response = self._request(
+            "POST", "v1/observation-specs:publish", json=self._publish_body(request)
+        )
+        return SubmittedObservation.model_validate(response)
+
+    def validate(self, request: SkynetImagingRequest) -> SpecValidation:
+        """
+        Check that Skynet accepts the request: its grant and filters against the
+        user's pools, then the spec itself. Use instrument_preview for which
+        instruments can carry it out.
+        """
+        errors = self._pool_errors(request)
+        if errors:
+            return SpecValidation(valid=False, errors=errors)
         try:
-            pool = pools.pool(request.grant_id)
+            self._request(
+                "POST",
+                "v1/observation-specs:validate",
+                json=self._publish_body(request)["spec"],
+            )
+        except SkynetError as exc:
+            if exc.status_code != 422:
+                raise
+            return SpecValidation(valid=False, errors=_field_errors(exc.detail))
+        return SpecValidation(valid=True)
+
+    def instrument_preview(
+        self, request: SkynetImagingRequest, instrument_ids: list[int] | None = None
+    ) -> list[InstrumentPreview]:
+        """
+        Report, per instrument, whether it can carry out the request, when it can
+        observe it in the window, and Skynet's exposure plan. By default it checks
+        every instrument in the grant's pool that offers one of the requested
+        filters. The request must be valid: Skynet answers an invalid one with a
+        422, raised as SkynetError.
+        """
+        pools = self.instrument_pools()
+        pool = self._pool(request)
+        if instrument_ids is None:
+            instrument_ids = _candidates(request, pool)
+        if not instrument_ids:
+            return []
+        spec = self._publish_body(request)["spec"]
+        compatibility = _CompatibilityResponse.model_validate(
+            self._request(
+                "POST",
+                "v1/observation-specs:compatible-instruments",
+                json={"spec": spec, "instrumentIds": instrument_ids},
+            )
+        )
+        assert request.window.start is not None  # checked in SkynetImagingRequest
+        start = request.window.start.utc.to_datetime(timezone=UTC)
+        end = request.window.end.utc.to_datetime(timezone=UTC)
+        checked_until = min(end, start + PREVIEW_SPAN)
+        previews = []
+        for result in compatibility.results:
+            instrument = pools.instruments.get(result.instrument_id)
+            telescope_id = instrument.telescope_id if instrument else None
+            preview = InstrumentPreview(
+                instrument_id=result.instrument_id,
+                telescope=pools.telescopes.get(telescope_id)
+                if telescope_id is not None
+                else None,
+                compatible=result.compatible,
+                reasons=result.reasons,
+            )
+            if result.compatible:
+                observability = _ObservabilityResponse.model_validate(
+                    self._request(
+                        "POST",
+                        "v1/observation-specs:observability",
+                        json={
+                            "spec": spec,
+                            "instrumentId": result.instrument_id,
+                            "start": _iso(request.window.start),
+                            "spanDays": (checked_until - start).total_seconds() / 86400,
+                            "resolutionSec": PREVIEW_RESOLUTION_SEC,
+                        },
+                    )
+                )
+                plan = _PlanResponse.model_validate(
+                    self._request(
+                        "POST",
+                        "v1/observation-specs:plan",
+                        json={
+                            "spec": spec,
+                            "instrumentId": result.instrument_id,
+                            "startsOn": _iso(request.window.start),
+                            "endsOn": _iso(request.window.end),
+                        },
+                    )
+                ).optical_imaging_configuration_plan
+                preview.windows = [w for w in observability.windows if w.observable]
+                preview.observable = bool(preview.windows)
+                preview.checked_until = checked_until
+                if plan is not None:
+                    preview.plan = PlanTotals(
+                        total_exposures=plan.total_exposures,
+                        total_exposure_time=plan.total_exposure_time_sec,
+                    )
+            previews.append(preview)
+        return previews
+
+    def _pool(self, request: SkynetImagingRequest) -> InstrumentPool:
+        try:
+            return self.instrument_pools().pool(request.grant_id)
         except KeyError:
             raise ValueError(
                 f"Grant {request.grant_id} is not one of your spendable observing grants"
             ) from None
-        missing = sorted(
-            {e.filter_id for e in request.exposures} - set(pool.filter_instrument_ids)
-        )
-        if missing:
-            raise ValueError(
-                f"Grant {request.grant_id} reaches no instrument with filter(s) {missing}"
-            )
-        body = request.to_publish_body(owner_id=pools.account(pool).owner_id)
-        response = self._request("POST", "v1/observation-specs:publish", json=body)
-        return SubmittedObservation.model_validate(response)
+
+    def _pool_errors(self, request: SkynetImagingRequest) -> dict[str, list[str]]:
+        """Check the request's grant and filters against the user's pools"""
+        try:
+            pool = self._pool(request)
+        except ValueError as exc:
+            return {"grant_id": [str(exc)]}
+        errors: dict[str, list[str]] = {}
+        for index, exposure in enumerate(request.exposures):
+            if exposure.filter_id not in pool.filter_instrument_ids:
+                message = (
+                    f"Grant {request.grant_id} reaches no instrument with filter "
+                    f"{exposure.filter_id}"
+                )
+                errors[f"exposures.{index}.filter_id"] = [message]
+        return errors
+
+    def _publish_body(self, request: SkynetImagingRequest) -> dict[str, Any]:
+        pools = self.instrument_pools()
+        owner_id = pools.account(self._pool(request)).owner_id
+        return request.to_publish_body(owner_id=owner_id)
 
     def progress(self, observation_id: int | str) -> ObservationProgress:
         """Get the observation's progress and downloadable science files"""
@@ -223,3 +356,25 @@ def _data_product(product: ProgressProduct, url: str) -> DataProduct:
         airmass=product.airmass,
         pixel_scale_arcsec_per_px=product.pixel_scale_arcsec_per_px,
     )
+
+
+def _candidates(request: SkynetImagingRequest, pool: InstrumentPool) -> list[int]:
+    """The pool's instruments that offer any of the requested filters"""
+    ids: set[int] = set()
+    for exposure in request.exposures:
+        ids.update(pool.filter_instrument_ids.get(exposure.filter_id, []))
+    return sorted(ids)
+
+
+def _field_errors(detail: Any) -> dict[str, list[str]]:
+    """Map a FastAPI 422 detail onto request field paths"""
+    errors: dict[str, list[str]] = {}
+    if not isinstance(detail, list):
+        return {NON_FIELD_ERRORS: [str(detail)]}
+    for item in detail:
+        if not isinstance(item, dict):
+            errors.setdefault(NON_FIELD_ERRORS, []).append(str(item))
+            continue
+        field = request_field(item.get("loc", [])) or NON_FIELD_ERRORS
+        errors.setdefault(field, []).append(str(item.get("msg", item)))
+    return errors

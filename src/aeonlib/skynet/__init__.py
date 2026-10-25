@@ -7,6 +7,7 @@ from .facility import (
     SkynetFacility,
 )
 from .pools import InstrumentPool, InstrumentPools, PoolLimits
+from .preview import InstrumentPreview, ObservabilityWindow, PlanTotals, SpecValidation
 from .progress import ObservationProgress, ProgressProduct
 from .request import (
     FilterExposure,
@@ -22,13 +23,17 @@ __all__ = [
     "FilterExposure",
     "InstrumentPool",
     "InstrumentPools",
+    "InstrumentPreview",
+    "ObservabilityWindow",
     "ObservationProgress",
     "ObservationState",
+    "PlanTotals",
     "PoolLimits",
     "ProgressProduct",
     "SkynetError",
     "SkynetFacility",
     "SkynetImagingRequest",
     "SourceModel",
+    "SpecValidation",
     "SubmittedObservation",
 ]
