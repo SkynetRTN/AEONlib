@@ -12,6 +12,7 @@ from aeonlib.skynet.facility import (
     SkynetError,
     SkynetFacility,
 )
+from aeonlib.skynet.progress import ObservationProgress
 from aeonlib.skynet.request import FilterExposure
 
 from ._data import load
@@ -194,7 +195,7 @@ class TestDataProducts:
             and product.filename == expected["filename"]
         )
         assert (
-            product.url.startswith("https://")
+            (product.url or "").startswith("https://")
             and product.is_reduced
             and product.is_final
         )
@@ -219,7 +220,7 @@ class TestDataProducts:
         everything = skynet.data_products(body["id"], final_only=False)
         assert [p.filename for p in everything] == ["frame-1.fits", "frame-2.fits"]
 
-    def test_files_skynet_will_not_presign_are_dropped(self):
+    def test_files_skynet_will_not_presign_have_no_url(self):
         body = load("progress/PENDING.json") | {"products": [_product(1), _product(2)]}
 
         def presign_first_only(request: httpx.Request) -> httpx.Response:
@@ -231,9 +232,21 @@ class TestDataProducts:
         recorder = Recorder(
             {progress_path(body["id"]): body, PRESIGN: presign_first_only}
         )
-        assert [p.filename for p in facility(recorder).data_products(body["id"])] == [
-            "frame-1.fits"
+        products = facility(recorder).data_products(body["id"])
+        assert [(p.filename, p.url) for p in products] == [
+            ("frame-1.fits", "u"),
+            ("frame-2.fits", None),
         ]
+
+    def test_a_progress_already_read_is_not_read_again(self):
+        progress = load("progress_products.json")
+        recorder = Recorder({PRESIGN: load("presign.json")})
+        skynet = facility(recorder)
+        (product,) = skynet.data_products(
+            progress["id"], progress=ObservationProgress.model_validate(progress)
+        )
+        assert product.url
+        assert recorder.sent(*progress_path(progress["id"])) == []
 
     def test_presigns_in_batches_of_200(self):
         body = load("progress/PENDING.json") | {
@@ -249,6 +262,25 @@ class TestDataProducts:
         recorder = Recorder({progress_path(body["id"]): body})
         assert facility(recorder).data_products(body["id"]) == []
         assert recorder.sent(*PRESIGN) == []
+
+
+class TestCancel:
+    def test_patches_the_status(self):
+        recorder = Recorder({("PATCH", "/v1/observations/42"): {"id": 42}})
+        facility(recorder).cancel(42)
+        (sent,) = recorder.requests
+        assert json.loads(sent.content) == {"status": "canceled"}
+
+    def test_a_refusal_raises(self):
+        recorder = Recorder(
+            {
+                ("PATCH", "/v1/observations/42"): httpx.Response(
+                    409, json={"detail": "Observation is already completed"}
+                )
+            }
+        )
+        with pytest.raises(SkynetError, match="already completed"):
+            facility(recorder).cancel(42)
 
 
 class TestErrors:

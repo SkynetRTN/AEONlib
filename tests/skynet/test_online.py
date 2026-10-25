@@ -65,8 +65,5 @@ def test_submit_then_read_progress(skynet: SkynetFacility):
         assert state.state in ("PENDING", "SCHEDULED", "IN_PROGRESS")
         assert skynet.data_products(submitted.id) == []
     finally:
-        # Cancel directly until the facility supports it
-        skynet._request(
-            "PATCH", f"v1/observations/{submitted.id}", json={"status": "canceled"}
-        )
+        skynet.cancel(submitted.id)
     assert skynet.state(submitted.id).state in TERMINAL_STATES

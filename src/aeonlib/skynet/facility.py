@@ -73,7 +73,8 @@ class DataProduct(BaseModel):
 
     file_id: str
     filename: str
-    url: str
+    url: str | None
+    """None when Skynet didn't presign the file. Ask again later."""
     is_reduced: bool
     is_final: bool
     telescope_id: int | None = None
@@ -302,17 +303,20 @@ class SkynetFacility:
         )
 
     def data_products(
-        self, observation_id: int | str, final_only: bool = True
+        self,
+        observation_id: int | str,
+        final_only: bool = True,
+        progress: ObservationProgress | None = None,
     ) -> list[DataProduct]:
         """
         Get the observation's science files with presigned URLs. With final_only,
-        raw frames that are still being processed are left out.
+        raw frames that are still being processed are left out. Pass a progress
+        already read to save reading it again. A file Skynet doesn't presign comes
+        back with url None.
         """
-        products = [
-            p
-            for p in self.progress(observation_id).products
-            if p.is_final or not final_only
-        ]
+        if progress is None:
+            progress = self.progress(observation_id)
+        products = [p for p in progress.products if p.is_final or not final_only]
         urls: dict[str, str] = {}
         for start in range(0, len(products), PRESIGN_BATCH):
             batch = products[start : start + PRESIGN_BATCH]
@@ -325,9 +329,18 @@ class SkynetFacility:
                 },
             )
             urls.update({item["fileId"]: item["url"] for item in body["items"]})
-        return [
-            _data_product(p, urls[p.file_id]) for p in products if p.file_id in urls
-        ]
+        missing = [p.file_id for p in products if p.file_id not in urls]
+        if missing:
+            logger.warning(
+                "Skynet didn't presign %d file(s): %s", len(missing), missing
+            )
+        return [_data_product(p, urls.get(p.file_id)) for p in products]
+
+    def cancel(self, observation_id: int | str) -> None:
+        """Cancel the observation. Frames already taken are kept."""
+        self._request(
+            "PATCH", f"v1/observations/{observation_id}", json={"status": "canceled"}
+        )
 
     def observation_url(self, observation_id: int | str) -> str:
         """Get the URL of the observation's page on the Skynet website"""
@@ -341,7 +354,7 @@ def _detail(response: httpx.Response) -> Any:
         return response.text
 
 
-def _data_product(product: ProgressProduct, url: str) -> DataProduct:
+def _data_product(product: ProgressProduct, url: str | None) -> DataProduct:
     return DataProduct(
         file_id=product.file_id,
         filename=product.filename,
