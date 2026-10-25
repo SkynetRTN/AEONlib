@@ -1,5 +1,5 @@
 Copied from SkynetRTN/skynet apps/public-api/tests/contract/aeonplus/fixtures/
-at commit cddcf85e12b9fda2226b8d5ac8f99258b61af03e (branch fu/aeonplus).
+at commit 7d9160f98b92d6d29b164df1190885e014144745 (branch fu/aeonplus).
 Skynet validates the originals against its own models in CI
 (test_aeonplus_fixtures.py); re-copy them, and update this file, when they change.
 status/<STATE>/progress.json is copied as progress/<STATE>.json.
