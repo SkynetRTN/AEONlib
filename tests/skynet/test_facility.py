@@ -93,6 +93,43 @@ class TestInstrumentPools:
         assert len(recorder.sent(*POOLS)) == 2
 
 
+ME = ("GET", "/v1/me")
+# GET /v1/me for the fixtures' user (UserWithEmail), trimmed
+ADA = {
+    "id": 133,
+    "uid": "3f30d2de-0574-45f7-a3fc-9bd7589138d6",
+    "entityType": "user",
+    "username": "ada",
+    "name": "Ada Lovelace",
+    "slug": "ada",
+    "email": "ada@example.test",
+}
+
+
+class TestMe:
+    def test_the_tokens_user(self):
+        recorder = Recorder({ME: ADA})
+        me = facility(recorder).me()
+        assert (me.id, me.username, me.name, me.slug) == (
+            133,
+            "ada",
+            "Ada Lovelace",
+            "ada",
+        )
+
+    def test_cached_until_refreshed(self):
+        recorder = Recorder({ME: ADA})
+        skynet = facility(recorder)
+        assert skynet.me() is skynet.me()
+        skynet.me(refresh=True)
+        assert len(recorder.sent(*ME)) == 2
+
+    def test_a_rejected_token(self):
+        recorder = Recorder({ME: httpx.Response(401, json={"detail": "Invalid token"})})
+        with pytest.raises(AuthenticationError):
+            facility(recorder).me()
+
+
 class TestSubmit:
     def test_publishes_the_contract_body_with_the_pool_owner(self):
         recorder = Recorder(

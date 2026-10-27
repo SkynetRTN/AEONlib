@@ -29,3 +29,10 @@ def test_one_pool_reaches_a_non_sim_telescope():
     pools = InstrumentPools.model_validate(load("instrument_pools.json"))
     slugs = {t.slug for t in pools.pool_telescopes(pools.pool(100))}
     assert any(not s.startswith("sim-") for s in slugs)
+
+
+def test_a_pool_names_its_accounts_owner():
+    pools = InstrumentPools.model_validate(load("instrument_pools.json"))
+    own, team = pools.owner(pools.pool(99)), pools.owner(pools.pool(100))
+    assert own is not None and (own.id, own.entity_type) == (133, "user")
+    assert team is not None and (team.id, team.entity_type) == (134, "organization")

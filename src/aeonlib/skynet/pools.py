@@ -42,6 +42,16 @@ class Entity(_SkynetResponse):
     name: str | None = None
 
 
+class SkynetUser(_SkynetResponse):
+    """The Skynet user a token acts for (GET /v1/me)"""
+
+    id: int
+    """Also the user's entity id: the ownerId of the accounts they own"""
+    username: str
+    name: str | None = None
+    slug: str | None = None
+
+
 class PoolLimits(_SkynetResponse):
     """Advisory bounds for a request form. None means unbounded."""
 
@@ -88,6 +98,10 @@ class InstrumentPools(_SkynetResponse):
 
     def account(self, pool: InstrumentPool) -> ObservingAccount:
         return self.observing_accounts[pool.account_id]
+
+    def owner(self, pool: InstrumentPool) -> Entity | None:
+        """The entity that owns the pool's account, and so the observations it funds"""
+        return self.entities.get(self.account(pool).owner_id)
 
     def pool_telescopes(self, pool: InstrumentPool) -> list[Telescope]:
         """Return the telescopes the pool's instruments are on"""

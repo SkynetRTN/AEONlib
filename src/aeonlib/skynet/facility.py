@@ -9,7 +9,7 @@ from aeonlib.conf import Settings
 from aeonlib.conf import settings as default_settings
 from aeonlib.exceptions import AuthenticationError, ServiceNetworkError
 
-from .pools import InstrumentPool, InstrumentPools
+from .pools import InstrumentPool, InstrumentPools, SkynetUser
 from .preview import (
     InstrumentPreview,
     PlanTotals,
@@ -115,6 +115,7 @@ class SkynetFacility:
         client.headers.update(headers)
         self._client = client
         self._pools: dict[str, InstrumentPools] = {}
+        self._me: SkynetUser | None = None
 
     def __del__(self):
         client = getattr(self, "_client", None)
@@ -132,6 +133,12 @@ class SkynetFacility:
         if response.is_error:
             raise SkynetError(response.status_code, _detail(response))
         return response.json()
+
+    def me(self, refresh: bool = False) -> SkynetUser:
+        """Get the Skynet user the token acts for (cached)"""
+        if refresh or self._me is None:
+            self._me = SkynetUser.model_validate(self._request("GET", "v1/me"))
+        return self._me
 
     def instrument_pools(
         self, observation_type: str = "optical_imaging", refresh: bool = False
