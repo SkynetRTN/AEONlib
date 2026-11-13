@@ -83,22 +83,17 @@ class InstrumentPool(_SkynetResponse):
 
 
 class InstrumentPools(_SkynetResponse):
-    """The user's instrument pools, with the objects they refer to, keyed by uid"""
+    """
+    The user's instrument pools, with the objects they refer to. Every map is
+    keyed by uid: Skynet's contract carries no integer id.
+    """
 
     observation_type: str
     pools: list[InstrumentPool] = Field(default_factory=list)
-    observing_accounts: dict[str, ObservingAccount] = Field(
-        default_factory=dict, validation_alias="observingAccountsByUid"
-    )
-    entities: dict[str, Entity] = Field(
-        default_factory=dict, validation_alias="entitiesByUid"
-    )
-    telescopes: dict[str, Telescope] = Field(
-        default_factory=dict, validation_alias="telescopesByUid"
-    )
-    instruments: dict[str, Instrument] = Field(
-        default_factory=dict, validation_alias="instrumentsByUid"
-    )
+    observing_accounts: dict[str, ObservingAccount] = Field(default_factory=dict)
+    entities: dict[str, Entity] = Field(default_factory=dict)
+    telescopes: dict[str, Telescope] = Field(default_factory=dict)
+    instruments: dict[str, Instrument] = Field(default_factory=dict)
     filters: dict[str, Filter] = Field(default_factory=dict)
 
     def pool(self, grant_uid: str) -> InstrumentPool:
