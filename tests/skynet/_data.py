@@ -15,7 +15,7 @@ STATES = (
 
 
 def load(name: str) -> Any:
-    return json.loads((DATA / name).read_text())
+    return json.loads((DATA / name).read_text(encoding="utf-8"))
 
 
 # The recorded fixtures' uids (instrument_pools.json): Ada owns an account
