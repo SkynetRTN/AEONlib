@@ -84,8 +84,8 @@ class SkynetImagingRequest(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(validate_assignment=True)
     name: Annotated[str, StringConstraints(min_length=1, max_length=256)]
-    grant_id: int
-    """The observing grant to spend, from `SkynetFacility.instrument_pools`"""
+    grant_uid: str
+    """The observing grant to spend (its uid), from `SkynetFacility.instrument_pools`"""
     target: SiderealTarget
     window: Window
     """Both start and end are required"""
@@ -126,8 +126,8 @@ class SkynetImagingRequest(BaseModel):
             )
         return self
 
-    def to_publish_body(self, owner_id: int) -> dict[str, Any]:
-        """Build the publish payload. owner_id is the funding account's owner."""
+    def to_publish_body(self, owner_uid: str) -> dict[str, Any]:
+        """Build the publish payload. owner_uid is the funding account's owner's uid."""
         configuration: dict[str, Any] = {
             "trackingMode": "sidereal",
             "ditherStrategy": "none",
@@ -186,8 +186,8 @@ class SkynetImagingRequest(BaseModel):
             data["cadencePeriodSec"] = self.cadence_period
             data["cadenceLevel"] = "epoch"
         return {
-            "ownerId": owner_id,
-            "observingGrantIds": [self.grant_id],
+            "ownerUid": owner_uid,
+            "observingGrantUids": [self.grant_uid],
             "name": self.name,
             "spec": {
                 "schemaKind": "observation_spec",
@@ -245,7 +245,6 @@ def _brightness_model(source: SourceModel) -> dict[str, Any]:
 class SubmittedObservation(_SkynetResponse):
     """A submitted observation"""
 
-    id: int
     uid: str
 
 
@@ -254,8 +253,8 @@ class SubmittedObservation(_SkynetResponse):
 # list index; the fixed defaults to_publish_body adds map to no field.
 WIRE_FIELDS: dict[str, str] = {
     "name": "name",
-    "observingGrantIds": "grant_id",
-    "ownerId": "grant_id",
+    "observingGrantUids": "grant_uid",
+    "ownerUid": "grant_uid",
     "startAfter": "window.start",
     "cancelOn": "window.end",
     "target": "target",

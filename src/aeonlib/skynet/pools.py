@@ -4,6 +4,10 @@ from pydantic import Field
 
 from ._response import _SkynetResponse
 
+# Skynet addresses every resource by uid (its C2 contract): the pools response
+# keys its sideloads by uid and each pool carries its grant, account and
+# instruments as uids. Nothing here reads an integer id.
+
 
 class Filter(_SkynetResponse):
     id: str
@@ -13,7 +17,7 @@ class Filter(_SkynetResponse):
 
 
 class Telescope(_SkynetResponse):
-    id: int
+    uid: str
     name: str
     slug: str
     latitude_deg: float
@@ -22,21 +26,21 @@ class Telescope(_SkynetResponse):
 
 
 class Instrument(_SkynetResponse):
-    id: int
+    uid: str
     name: str | None = None
-    telescope_id: int | None = None
+    telescope_uid: str | None = None
 
 
 class ObservingAccount(_SkynetResponse):
-    id: int
+    uid: str
     name: str | None = None
     slug: str | None = None
-    owner_id: int
+    owner_uid: str
     """The entity that owns the account and the observations it funds"""
 
 
 class Entity(_SkynetResponse):
-    id: int
+    uid: str
     entity_type: Literal["user", "organization"]
     slug: str
     name: str | None = None
@@ -45,8 +49,8 @@ class Entity(_SkynetResponse):
 class SkynetUser(_SkynetResponse):
     """The Skynet user a token acts for (GET /v1/me)"""
 
-    id: int
-    """Also the user's entity id: the ownerId of the accounts they own"""
+    uid: str
+    """Also the user's entity uid: the ownerUid of the accounts they own"""
     username: str
     name: str | None = None
     slug: str | None = None
@@ -69,45 +73,56 @@ class PoolLimits(_SkynetResponse):
 class InstrumentPool(_SkynetResponse):
     """An observing grant the user can spend and the instruments it can fund"""
 
-    grant_id: int
+    grant_uid: str
     grant_type: str
-    account_id: int
-    instrument_ids: list[int] = Field(default_factory=list)
-    filter_instrument_ids: dict[str, list[int]] = Field(default_factory=dict)
-    """Instrument ids offering each filter"""
+    account_uid: str
+    instrument_uids: list[str] = Field(default_factory=list)
+    filter_instrument_uids: dict[str, list[str]] = Field(default_factory=dict)
+    """Instrument uids offering each filter"""
     limits: PoolLimits = Field(default_factory=PoolLimits)
 
 
 class InstrumentPools(_SkynetResponse):
-    """The user's instrument pools, with the objects they refer to"""
+    """The user's instrument pools, with the objects they refer to, keyed by uid"""
 
     observation_type: str
     pools: list[InstrumentPool] = Field(default_factory=list)
-    observing_accounts: dict[int, ObservingAccount] = Field(default_factory=dict)
-    entities: dict[int, Entity] = Field(default_factory=dict)
-    telescopes: dict[int, Telescope] = Field(default_factory=dict)
-    instruments: dict[int, Instrument] = Field(default_factory=dict)
+    observing_accounts: dict[str, ObservingAccount] = Field(
+        default_factory=dict, validation_alias="observingAccountsByUid"
+    )
+    entities: dict[str, Entity] = Field(
+        default_factory=dict, validation_alias="entitiesByUid"
+    )
+    telescopes: dict[str, Telescope] = Field(
+        default_factory=dict, validation_alias="telescopesByUid"
+    )
+    instruments: dict[str, Instrument] = Field(
+        default_factory=dict, validation_alias="instrumentsByUid"
+    )
     filters: dict[str, Filter] = Field(default_factory=dict)
 
-    def pool(self, grant_id: int) -> InstrumentPool:
+    def pool(self, grant_uid: str) -> InstrumentPool:
         """Return the pool for a grant. Raises KeyError if the user can't spend it."""
         for pool in self.pools:
-            if pool.grant_id == grant_id:
+            if pool.grant_uid == grant_uid:
                 return pool
-        raise KeyError(grant_id)
+        raise KeyError(grant_uid)
 
     def account(self, pool: InstrumentPool) -> ObservingAccount:
-        return self.observing_accounts[pool.account_id]
+        return self.observing_accounts[pool.account_uid]
 
     def owner(self, pool: InstrumentPool) -> Entity | None:
         """The entity that owns the pool's account, and so the observations it funds"""
-        return self.entities.get(self.account(pool).owner_id)
+        return self.entities.get(self.account(pool).owner_uid)
 
     def pool_telescopes(self, pool: InstrumentPool) -> list[Telescope]:
-        """Return the telescopes the pool's instruments are on"""
-        ids = {
-            self.instruments[i].telescope_id
-            for i in pool.instrument_ids
-            if i in self.instruments
-        }
-        return [self.telescopes[t] for t in sorted(i for i in ids if i is not None)]
+        """Return the telescopes the pool's instruments are on, in instrument order"""
+        telescopes: dict[str, Telescope] = {}
+        for instrument_uid in pool.instrument_uids:
+            instrument = self.instruments.get(instrument_uid)
+            if instrument is None or instrument.telescope_uid is None:
+                continue
+            telescope = self.telescopes.get(instrument.telescope_uid)
+            if telescope is not None:
+                telescopes.setdefault(telescope.uid, telescope)
+        return list(telescopes.values())

@@ -33,7 +33,7 @@ class PlanTotals(BaseModel):
 class InstrumentPreview(BaseModel):
     """How one instrument would carry out a request"""
 
-    instrument_id: int
+    instrument_uid: str
     telescope: Telescope | None = None
     compatible: bool
     reasons: list[str] = Field(default_factory=list)
@@ -49,7 +49,7 @@ class InstrumentPreview(BaseModel):
 
 
 class _Compatibility(_SkynetResponse):
-    instrument_id: int
+    instrument_uid: str
     compatible: bool
     reasons: list[str] = Field(default_factory=list)
 

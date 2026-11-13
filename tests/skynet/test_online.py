@@ -36,7 +36,7 @@ def test_instrument_pools(skynet: SkynetFacility):
     pools = skynet.instrument_pools()
     assert pools.pools, "the token's user holds no spendable optical grant"
     for pool in pools.pools:
-        assert pools.account(pool).owner_id in pools.entities
+        assert pools.account(pool).owner_uid in pools.entities
         for telescope in pools.pool_telescopes(pool):
             assert -90 <= telescope.latitude_deg <= 90
 
@@ -44,7 +44,7 @@ def test_instrument_pools(skynet: SkynetFacility):
 def sim_pool(skynet: SkynetFacility) -> InstrumentPool:
     """A pool with filters, preferring one that reaches simulators only"""
     pools = skynet.instrument_pools()
-    usable = [p for p in pools.pools if p.filter_instrument_ids]
+    usable = [p for p in pools.pools if p.filter_instrument_uids]
     assert usable, "the token's user holds no grant with filters"
     for pool in usable:
         if all(t.slug.startswith("sim-") for t in pools.pool_telescopes(pool)):
@@ -53,11 +53,11 @@ def sim_pool(skynet: SkynetFacility) -> InstrumentPool:
 
 
 def request_for(pool: InstrumentPool, **overrides: Any) -> SkynetImagingRequest:
-    filter_id = min(pool.filter_instrument_ids)
+    filter_id = min(pool.filter_instrument_uids)
     now = datetime.now(UTC).replace(microsecond=0)
     fields: dict[str, Any] = {
         "name": "AEONlib online test",
-        "grant_id": pool.grant_id,
+        "grant_uid": pool.grant_uid,
         "target": SiderealTarget(name="AEONlib test", type="ICRS", ra=150.0, dec=-30.0),
         "window": Window(start=now, end=now + timedelta(days=1)),
         "exposures": [FilterExposure(filter_id=filter_id, target_snr=5, count=1)],
@@ -94,7 +94,7 @@ def test_instrument_preview(skynet: SkynetFacility):
     previews = skynet.instrument_preview(request_for(pool))
     assert previews, "no instrument in the pool offers the filter"
     for preview in previews:
-        assert preview.instrument_id in pool.instrument_ids
+        assert preview.instrument_uid in pool.instrument_uids
         assert preview.telescope is not None
         if preview.compatible:
             assert preview.observable is not None
@@ -109,12 +109,12 @@ def test_instrument_preview(skynet: SkynetFacility):
 def test_submit_then_read_progress(skynet: SkynetFacility):
     submitted = skynet.submit(request_for(sim_pool(skynet)))
     try:
-        state = skynet.state(submitted.id)
+        state = skynet.state(submitted.uid)
         assert state.state in ("PENDING", "SCHEDULED", "IN_PROGRESS")
-        assert skynet.data_products(submitted.id) == []
+        assert skynet.data_products(submitted.uid) == []
     finally:
-        skynet.cancel(submitted.id)
-    assert skynet.state(submitted.id).state in TERMINAL_STATES
+        skynet.cancel(submitted.uid)
+    assert skynet.state(submitted.uid).state in TERMINAL_STATES
 
 
 @pytest.mark.side_effect
@@ -128,5 +128,5 @@ def test_submit_a_cadence_then_cancel(skynet: SkynetFacility):
         cadence_period=86400.0,
     )
     submitted = skynet.submit(request)
-    skynet.cancel(submitted.id)
-    assert skynet.state(submitted.id).state == "CANCELED"
+    skynet.cancel(submitted.uid)
+    assert skynet.state(submitted.uid).state == "CANCELED"

@@ -77,8 +77,8 @@ class DataProduct(BaseModel):
     """None when Skynet didn't presign the file. Ask again later."""
     is_reduced: bool
     is_final: bool
-    telescope_id: int | None = None
-    instrument_id: int | None = None
+    telescope_uid: str | None = None
+    instrument_uid: str | None = None
     filter_id: str | None = None
     exposure_time_sec: float | None = None
     taken_at_start_utc: datetime | None = None
@@ -187,7 +187,7 @@ class SkynetFacility:
         return SpecValidation(valid=True)
 
     def instrument_preview(
-        self, request: SkynetImagingRequest, instrument_ids: list[int] | None = None
+        self, request: SkynetImagingRequest, instrument_uids: list[str] | None = None
     ) -> list[InstrumentPreview]:
         """
         Report, per instrument, whether it can carry out the request, when it can
@@ -198,16 +198,16 @@ class SkynetFacility:
         """
         pools = self.instrument_pools()
         pool = self._pool(request)
-        if instrument_ids is None:
-            instrument_ids = _candidates(request, pool)
-        if not instrument_ids:
+        if instrument_uids is None:
+            instrument_uids = _candidates(request, pool)
+        if not instrument_uids:
             return []
         spec = self._publish_body(request)["spec"]
         compatibility = _CompatibilityResponse.model_validate(
             self._request(
                 "POST",
                 "v1/observation-specs:compatible-instruments",
-                json={"spec": spec, "instrumentIds": instrument_ids},
+                json={"spec": spec, "instrumentUids": instrument_uids},
             )
         )
         assert request.window.start is not None  # checked in SkynetImagingRequest
@@ -218,12 +218,12 @@ class SkynetFacility:
         checked_until = min(end, start + PREVIEW_SPAN)
         previews = []
         for result in compatibility.results:
-            instrument = pools.instruments.get(result.instrument_id)
-            telescope_id = instrument.telescope_id if instrument else None
+            instrument = pools.instruments.get(result.instrument_uid)
+            telescope_uid = instrument.telescope_uid if instrument else None
             preview = InstrumentPreview(
-                instrument_id=result.instrument_id,
-                telescope=pools.telescopes.get(telescope_id)
-                if telescope_id is not None
+                instrument_uid=result.instrument_uid,
+                telescope=pools.telescopes.get(telescope_uid)
+                if telescope_uid is not None
                 else None,
                 compatible=result.compatible,
                 reasons=result.reasons,
@@ -239,7 +239,7 @@ class SkynetFacility:
                         "v1/observation-specs:observability",
                         json={
                             "spec": spec,
-                            "instrumentId": result.instrument_id,
+                            "instrumentUid": result.instrument_uid,
                             "start": start.isoformat().replace("+00:00", "Z"),
                             "spanDays": (checked_until - start).total_seconds() / 86400,
                             "resolutionSec": PREVIEW_RESOLUTION_SEC,
@@ -252,7 +252,7 @@ class SkynetFacility:
                         "v1/observation-specs:plan",
                         json={
                             "spec": spec,
-                            "instrumentId": result.instrument_id,
+                            "instrumentUid": result.instrument_uid,
                             "startsOn": _iso(request.window.start),
                             "endsOn": _iso(request.window.end),
                         },
@@ -271,10 +271,10 @@ class SkynetFacility:
 
     def _pool(self, request: SkynetImagingRequest) -> InstrumentPool:
         try:
-            return self.instrument_pools().pool(request.grant_id)
+            return self.instrument_pools().pool(request.grant_uid)
         except KeyError:
             raise ValueError(
-                f"Grant {request.grant_id} is not one of your spendable observing grants"
+                f"Grant {request.grant_uid} is not one of your spendable observing grants"
             ) from None
 
     def _pool_errors(self, request: SkynetImagingRequest) -> dict[str, list[str]]:
@@ -282,12 +282,12 @@ class SkynetFacility:
         try:
             pool = self._pool(request)
         except ValueError as exc:
-            return {"grant_id": [str(exc)]}
+            return {"grant_uid": [str(exc)]}
         errors: dict[str, list[str]] = {}
         for index, exposure in enumerate(request.exposures):
-            if exposure.filter_id not in pool.filter_instrument_ids:
+            if exposure.filter_id not in pool.filter_instrument_uids:
                 message = (
-                    f"Grant {request.grant_id} reaches no instrument with filter "
+                    f"Grant {request.grant_uid} reaches no instrument with filter "
                     f"{exposure.filter_id}"
                 )
                 errors[f"exposures.{index}.filter_id"] = [message]
@@ -295,17 +295,17 @@ class SkynetFacility:
 
     def _publish_body(self, request: SkynetImagingRequest) -> dict[str, Any]:
         pools = self.instrument_pools()
-        owner_id = pools.account(self._pool(request)).owner_id
-        return request.to_publish_body(owner_id=owner_id)
+        owner_uid = pools.account(self._pool(request)).owner_uid
+        return request.to_publish_body(owner_uid=owner_uid)
 
-    def progress(self, observation_id: int | str) -> ObservationProgress:
+    def progress(self, observation_uid: str) -> ObservationProgress:
         """Get the observation's progress and downloadable science files"""
-        body = self._request("GET", f"v1/observations/{observation_id}/progress")
+        body = self._request("GET", f"v1/observations/{observation_uid}/progress")
         return ObservationProgress.model_validate(body)
 
-    def state(self, observation_id: int | str) -> ObservationState:
+    def state(self, observation_uid: str) -> ObservationState:
         """Get the observation's state and schedule"""
-        progress = self.progress(observation_id)
+        progress = self.progress(observation_uid)
         state = STATES[progress.state]
         return ObservationState(
             state=state,
@@ -317,7 +317,7 @@ class SkynetFacility:
 
     def data_products(
         self,
-        observation_id: int | str,
+        observation_uid: str,
         final_only: bool = True,
         progress: ObservationProgress | None = None,
     ) -> list[DataProduct]:
@@ -328,7 +328,7 @@ class SkynetFacility:
         back with url None.
         """
         if progress is None:
-            progress = self.progress(observation_id)
+            progress = self.progress(observation_uid)
         products = [p for p in progress.products if p.is_final or not final_only]
         urls: dict[str, str] = {}
         for start in range(0, len(products), PRESIGN_BATCH):
@@ -349,15 +349,15 @@ class SkynetFacility:
             )
         return [_data_product(p, urls.get(p.file_id)) for p in products]
 
-    def cancel(self, observation_id: int | str) -> None:
+    def cancel(self, observation_uid: str) -> None:
         """Cancel the observation. Frames already taken are kept."""
         self._request(
-            "PATCH", f"v1/observations/{observation_id}", json={"status": "canceled"}
+            "PATCH", f"v1/observations/{observation_uid}", json={"status": "canceled"}
         )
 
-    def observation_url(self, observation_id: int | str) -> str:
+    def observation_url(self, observation_uid: str) -> str:
         """Get the URL of the observation's page on the Skynet website"""
-        return f"{self.web_root}/observations/{observation_id}"
+        return f"{self.web_root}/observations/{observation_uid}"
 
 
 def _now() -> datetime:
@@ -379,8 +379,8 @@ def _data_product(product: ProgressProduct, url: str | None) -> DataProduct:
         url=url,
         is_reduced=product.is_reduced,
         is_final=product.is_final,
-        telescope_id=product.telescope_id,
-        instrument_id=product.instrument_id,
+        telescope_uid=product.telescope_uid,
+        instrument_uid=product.instrument_uid,
         filter_id=product.filter_id,
         exposure_time_sec=product.exposure_time_sec,
         taken_at_start_utc=product.taken_at_start_utc,
@@ -389,12 +389,12 @@ def _data_product(product: ProgressProduct, url: str | None) -> DataProduct:
     )
 
 
-def _candidates(request: SkynetImagingRequest, pool: InstrumentPool) -> list[int]:
-    """The pool's instruments that offer any of the requested filters"""
-    ids: set[int] = set()
+def _candidates(request: SkynetImagingRequest, pool: InstrumentPool) -> list[str]:
+    """The pool's instruments that offer any of the requested filters, in pool order"""
+    wanted: set[str] = set()
     for exposure in request.exposures:
-        ids.update(pool.filter_instrument_ids.get(exposure.filter_id, []))
-    return sorted(ids)
+        wanted.update(pool.filter_instrument_uids.get(exposure.filter_id, []))
+    return [uid for uid in pool.instrument_uids if uid in wanted]
 
 
 def _field_errors(detail: Any) -> dict[str, list[str]]:

@@ -344,6 +344,13 @@ The token must be an unscoped Skynet personal API token. Skynet presents its
 telescopes as a single optical imaging facility: requests spend one of the
 user's observing grants, and Skynet chooses the telescope.
 
+Every Skynet resource is addressed by its `uid` (a UUID string): the grant a
+`SkynetImagingRequest` spends (`grant_uid`), the accounts, owners, telescopes
+and instruments in `instrument_pools()`, the instruments `instrument_preview()`
+reports, and the observation `submit()` returns, which `progress()`, `state()`,
+`data_products()`, `cancel()` and `observation_url()` take. Skynet's integer
+ids are not part of the contract and are not read.
+
 Unlike the OCS facilities, `validate()` only checks that Skynet accepts the
 request. Which telescopes can carry it out, when they can observe it and the
 estimated exposure time come from `instrument_preview()`.

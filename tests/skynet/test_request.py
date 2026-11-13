@@ -15,7 +15,7 @@ from aeonlib.skynet.request import (
     request_field,
 )
 
-from ._data import load
+from ._data import ADA, ADA_GRANT, TEAM, TEAM_GRANT, load
 
 
 def utc(*args: int) -> datetime:
@@ -52,7 +52,7 @@ def afterglow(
 def snr_request(**overrides: Any) -> SkynetImagingRequest:
     fields: dict[str, Any] = {
         "name": "AT 2026abc follow-up",
-        "grant_id": 99,
+        "grant_uid": ADA_GRANT,
         "target": target(),
         "window": window(),
         "exposures": [
@@ -68,22 +68,22 @@ def snr_request(**overrides: Any) -> SkynetImagingRequest:
 
 class TestPublishBody:
     def test_snr_request_matches_the_contract(self):
-        assert snr_request().to_publish_body(owner_id=133) == load("publish_snr.json")
+        assert snr_request().to_publish_body(owner_uid=ADA) == load("publish_snr.json")
 
     def test_exposure_request_matches_the_contract(self):
         request = SkynetImagingRequest(
             name="AT 2026abc fixed exposure",
-            grant_id=99,
+            grant_uid=ADA_GRANT,
             target=target(),
             window=window(),
             exposures=[FilterExposure(filter_id="V", total_exposure_time=600)],
         )
-        assert request.to_publish_body(owner_id=133) == load("publish_exposure.json")
+        assert request.to_publish_body(owner_uid=ADA) == load("publish_exposure.json")
 
     def test_cadence_request_matches_the_contract(self):
         request = SkynetImagingRequest(
             name="AT 2026abc nightly",
-            grant_id=100,
+            grant_uid=TEAM_GRANT,
             target=target(),
             window=window(),
             exposures=[FilterExposure(filter_id="r'", target_snr=5, count=2)],
@@ -92,10 +92,10 @@ class TestPublishBody:
             epoch_count=4,
             cadence_period=86400,
         )
-        assert request.to_publish_body(owner_id=134) == load("publish_cadence.json")
+        assert request.to_publish_body(owner_uid=TEAM) == load("publish_cadence.json")
 
     def test_one_epoch_sends_no_cadence(self):
-        data = snr_request().to_publish_body(owner_id=1)["spec"]["data"]
+        data = snr_request().to_publish_body(owner_uid=ADA)["spec"]["data"]
         assert not {"epochCount", "cadenceKind", "cadencePeriodSec"} & set(data)
 
     def test_exponential_decay_moves_the_magnitude_to_the_event(self):
@@ -111,7 +111,7 @@ class TestPublishBody:
             decay_timescale=7200.0,
             spectral_index=0.7,
         )
-        body = snr_request(source=source).to_publish_body(owner_id=1)
+        body = snr_request(source=source).to_publish_body(owner_uid=ADA)
         model = body["spec"]["data"]["opticalImagingConfiguration"]["brightnessModel"]
         assert model["magnitudeMag"] == pytest.approx(17.8 - 5 / log(10))
         assert model["temporalComponent"] == {
@@ -123,18 +123,18 @@ class TestPublishBody:
 
     def test_reference_time_is_measured_from_the_event(self):
         source = afterglow(measured_at=utc(2026, 10, 31, 3))
-        body = snr_request(source=source).to_publish_body(owner_id=1)
+        body = snr_request(source=source).to_publish_body(owner_uid=ADA)
         model = body["spec"]["data"]["opticalImagingConfiguration"]["brightnessModel"]
         assert model["temporalComponent"]["referenceTimeSec"] == 3600.0
 
     @pytest.mark.parametrize(("airmass", "elevation"), [(2.0, 30.0), (1.5, 41.810315)])
     def test_max_airmass_becomes_min_elevation(self, airmass: float, elevation: float):
-        body = snr_request(max_airmass=airmass).to_publish_body(owner_id=1)
+        body = snr_request(max_airmass=airmass).to_publish_body(owner_uid=ADA)
         config = body["spec"]["data"]["opticalImagingConfiguration"]
         assert config["minElevationDeg"] == pytest.approx(elevation)
 
     def test_unset_options_are_left_out(self):
-        body = snr_request(max_airmass=None).to_publish_body(owner_id=1)
+        body = snr_request(max_airmass=None).to_publish_body(owner_uid=ADA)
         config = body["spec"]["data"]["opticalImagingConfiguration"]
         assert "minElevationDeg" not in config
         assert "minMoonSeparationDeg" not in config
@@ -151,7 +151,9 @@ class TestPublishBody:
         ],
     )
     def test_moon_separation_accepts_any_angle(self, separation: Any, degrees: float):
-        body = snr_request(min_moon_separation=separation).to_publish_body(owner_id=1)
+        body = snr_request(min_moon_separation=separation).to_publish_body(
+            owner_uid=ADA
+        )
         config = body["spec"]["data"]["opticalImagingConfiguration"]
         assert config["minMoonSeparationDeg"] == pytest.approx(degrees)
         assert isinstance(config["minMoonSeparationDeg"], float)
@@ -159,7 +161,7 @@ class TestPublishBody:
     def test_subsecond_times_keep_their_fraction(self):
         start = datetime(2026, 11, 1, 0, 0, 0, 500000, tzinfo=UTC)
         request = snr_request(window=Window(start=start, end=utc(2026, 11, 8)))
-        data = request.to_publish_body(owner_id=1)["spec"]["data"]
+        data = request.to_publish_body(owner_uid=ADA)["spec"]["data"]
         assert data["startAfter"] == "2026-11-01T00:00:00.500000Z"
 
 
