@@ -9,7 +9,7 @@ import pytest
 from aeonlib.skynet.facility import SkynetError
 from aeonlib.skynet.request import FilterExposure
 
-from ._data import load
+from ._data import ATACAMA, KAROO, NO_SUCH_GRANT, OUTBACK, SIMS, load
 from .test_facility import POOLS, Recorder, facility
 from .test_request import snr_request
 
@@ -29,31 +29,31 @@ OBSERVABILITY = ("POST", "/v1/observation-specs:observability")
 PLAN = ("POST", "/v1/observation-specs:plan")
 
 
-def compatible(incompatible: frozenset[int] = frozenset()):
+def compatible(incompatible: frozenset[str] = frozenset()):
     """Answer :compatible-instruments for the instruments asked, from the recordings"""
     ok = load("dry_run/compatible_instruments.json")["results"][0]
     refused = load("dry_run/compatible_instruments_incompatible.json")["results"][0]
 
     def answer(request: httpx.Request) -> httpx.Response:
-        ids = json.loads(request.content)["instrumentIds"]
+        uids = json.loads(request.content)["instrumentUids"]
         results = [
-            {**(refused if i in incompatible else ok), "instrumentId": i} for i in ids
+            {**(refused if i in incompatible else ok), "instrumentUid": i} for i in uids
         ]
         return httpx.Response(200, json={"results": results})
 
     return answer
 
 
-def observability(observable: frozenset[int]):
+def observability(observable: frozenset[str]):
     """The recorded windows (none observable), with one made observable for some instruments"""
     recorded = load("dry_run/observability.json")
 
     def answer(request: httpx.Request) -> httpx.Response:
-        instrument_id = json.loads(request.content)["instrumentId"]
+        instrument_uid = json.loads(request.content)["instrumentUid"]
         body = copy.deepcopy(recorded)
         for window in body["windows"]:
-            window["instrumentId"] = instrument_id
-        if instrument_id in observable:
+            window["instrumentUid"] = instrument_uid
+        if instrument_uid in observable:
             body["windows"][0]["observable"] = True
             body["windows"][0]["reason"] = None
         return httpx.Response(200, json=body)
@@ -61,12 +61,12 @@ def observability(observable: frozenset[int]):
     return answer
 
 
-def plan(totals: dict[int, tuple[int, float]]):
+def plan(totals: dict[str, tuple[int, float]]):
     recorded = load("dry_run/plan.json")
 
     def answer(request: httpx.Request) -> httpx.Response:
         body = copy.deepcopy(recorded)
-        count, seconds = totals[json.loads(request.content)["instrumentId"]]
+        count, seconds = totals[json.loads(request.content)["instrumentUid"]]
         body["opticalImagingConfigurationPlan"]["totalExposures"] = count
         body["opticalImagingConfigurationPlan"]["totalExposureTimeSec"] = seconds
         return httpx.Response(200, json=body)
@@ -78,8 +78,8 @@ def preview_routes() -> dict[tuple[str, str], Any]:
     return {
         POOLS: load("instrument_pools.json"),
         COMPATIBLE: compatible(),
-        OBSERVABILITY: observability(frozenset({105, 106, 107})),
-        PLAN: plan({105: (6, 12.0), 106: (6, 15.5), 107: (6, 20.0)}),
+        OBSERVABILITY: observability(frozenset(SIMS)),
+        PLAN: plan({ATACAMA: (6, 12.0), KAROO: (6, 15.5), OUTBACK: (6, 20.0)}),
     }
 
 
@@ -142,9 +142,9 @@ class TestValidate:
 
     def test_a_grant_the_user_cannot_spend(self):
         recorder = Recorder({POOLS: load("instrument_pools.json")})
-        result = facility(recorder).validate(snr_request(grant_id=12345))
+        result = facility(recorder).validate(snr_request(grant_uid=NO_SUCH_GRANT))
         assert not result.valid
-        assert list(result.errors) == ["grant_id"]
+        assert list(result.errors) == ["grant_uid"]
         assert recorder.sent(*VALIDATE) == []
 
     def test_a_filter_the_pool_lacks_names_its_exposure(self):
@@ -175,8 +175,8 @@ class TestInstrumentPreview:
         recorder = Recorder(preview_routes())
         previews = facility(recorder).instrument_preview(snr_request())
         (sent,) = recorder.sent(*COMPATIBLE)
-        assert json.loads(sent.content)["instrumentIds"] == [105, 106, 107]
-        assert [p.instrument_id for p in previews] == [105, 106, 107]
+        assert json.loads(sent.content)["instrumentUids"] == SIMS
+        assert [p.instrument_uid for p in previews] == SIMS
         assert [p.telescope.slug for p in previews if p.telescope] == [
             "sim-optical-atacama",
             "sim-optical-karoo",
@@ -191,18 +191,18 @@ class TestInstrumentPreview:
 
     def test_an_incompatible_instrument_has_reasons_and_no_further_checks(self):
         recorder = Recorder(preview_routes())
-        recorder.routes[COMPATIBLE] = compatible(frozenset({106}))
+        recorder.routes[COMPATIBLE] = compatible(frozenset({KAROO}))
         previews = facility(recorder).instrument_preview(snr_request())
         karoo = previews[1]
         assert not karoo.compatible
         assert karoo.reasons
         assert karoo.observable is None and karoo.plan is None
-        asked = [json.loads(r.content)["instrumentId"] for r in recorder.sent(*PLAN)]
-        assert asked == [105, 107]
+        asked = [json.loads(r.content)["instrumentUid"] for r in recorder.sent(*PLAN)]
+        assert asked == [ATACAMA, OUTBACK]
 
     def test_an_instrument_with_no_observable_window(self):
         recorder = Recorder(preview_routes())
-        recorder.routes[OBSERVABILITY] = observability(frozenset({105}))
+        recorder.routes[OBSERVABILITY] = observability(frozenset({ATACAMA}))
         previews = facility(recorder).instrument_preview(snr_request())
         assert [p.observable for p in previews] == [True, False, False]
         assert previews[0].windows and not previews[1].windows
@@ -210,13 +210,13 @@ class TestInstrumentPreview:
     def test_named_instruments_only(self):
         recorder = Recorder(preview_routes())
         previews = facility(recorder).instrument_preview(
-            snr_request(), instrument_ids=[106]
+            snr_request(), instrument_uids=[KAROO]
         )
-        assert [p.instrument_id for p in previews] == [106]
+        assert [p.instrument_uid for p in previews] == [KAROO]
 
     def test_the_span_is_the_window_up_to_a_week(self):
         recorder = Recorder(preview_routes())
-        facility(recorder).instrument_preview(snr_request(), instrument_ids=[105])
+        facility(recorder).instrument_preview(snr_request(), instrument_uids=[ATACAMA])
         (sent,) = recorder.sent(*OBSERVABILITY)
         body = json.loads(sent.content)
         assert body["start"] == "2026-11-01T00:00:00Z"
@@ -233,14 +233,14 @@ class TestInstrumentPreview:
         )
         recorder = Recorder(preview_routes())
         (preview,) = facility(recorder).instrument_preview(
-            request, instrument_ids=[105]
+            request, instrument_uids=[ATACAMA]
         )
         assert preview.checked_until is not None
         assert preview.checked_until.isoformat() == "2026-11-08T00:00:00+00:00"
 
     def test_plan_is_asked_for_the_window(self):
         recorder = Recorder(preview_routes())
-        facility(recorder).instrument_preview(snr_request(), instrument_ids=[105])
+        facility(recorder).instrument_preview(snr_request(), instrument_uids=[ATACAMA])
         (sent,) = recorder.sent(*PLAN)
         body = json.loads(sent.content)
         assert (body["startsOn"], body["endsOn"]) == (
@@ -254,7 +254,7 @@ class TestInstrumentPreview:
         monkeypatch.setattr("aeonlib.skynet.facility._now", lambda: later)
         recorder = Recorder(preview_routes())
         (preview,) = facility(recorder).instrument_preview(
-            snr_request(), instrument_ids=[105]
+            snr_request(), instrument_uids=[ATACAMA]
         )
         (sent,) = recorder.sent(*OBSERVABILITY)
         body = json.loads(sent.content)
@@ -268,7 +268,7 @@ class TestInstrumentPreview:
         monkeypatch.setattr("aeonlib.skynet.facility._now", lambda: later)
         recorder = Recorder(preview_routes())
         (preview,) = facility(recorder).instrument_preview(
-            snr_request(), instrument_ids=[105]
+            snr_request(), instrument_uids=[ATACAMA]
         )
         assert preview.compatible and preview.observable is False
         assert recorder.sent(*OBSERVABILITY) == [] and recorder.sent(*PLAN) == []
@@ -284,4 +284,4 @@ class TestInstrumentPreview:
     def test_a_grant_the_user_cannot_spend_raises(self):
         recorder = Recorder(preview_routes())
         with pytest.raises(ValueError, match="not one of your spendable"):
-            facility(recorder).instrument_preview(snr_request(grant_id=12345))
+            facility(recorder).instrument_preview(snr_request(grant_uid=NO_SUCH_GRANT))

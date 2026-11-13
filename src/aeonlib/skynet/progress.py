@@ -19,17 +19,17 @@ SkynetProgressState = Literal[
 class ProgressProduct(_SkynetResponse):
     """A downloadable science file"""
 
-    asset_id: int
+    asset_uid: str
     file_id: str
     filename: str
     is_reduced: bool = False
     is_final: bool = False
     """A reduced product, or a raw frame no reduced product will replace"""
     processing_flags: list[str] = Field(default_factory=list)
-    root_asset_id: int | None = None
-    task_id: int | None = None
-    instrument_id: int | None = None
-    telescope_id: int | None = None
+    root_asset_uid: str | None = None
+    task_uid: str | None = None
+    instrument_uid: str | None = None
+    telescope_uid: str | None = None
     filter_id: str | None = None
     exposure_time_sec: float | None = None
     taken_at_start_utc: datetime | None = None
@@ -40,7 +40,6 @@ class ProgressProduct(_SkynetResponse):
 class ObservationProgress(_SkynetResponse):
     """An observation's state, schedule and downloadable science files"""
 
-    id: int
     uid: str
     status: str
     """Skynet status: active, completed or canceled"""
